@@ -207,20 +207,9 @@ export default function App() {
       }
     }
 
-    // Re-parse the DOM on resize or scroll for live updates
-    function handleResizeOrScroll() {
-      buildDomSnapshot();
-    }
-
     window.addEventListener("mousemove", handleMouseMove);
-    window.addEventListener("resize", handleResizeOrScroll);
-    // Use capture or bubble as needed. We'll do capture: true here
-    window.addEventListener("scroll", handleResizeOrScroll, true);
-
     return () => {
       window.removeEventListener("mousemove", handleMouseMove);
-      window.removeEventListener("resize", handleResizeOrScroll);
-      window.removeEventListener("scroll", handleResizeOrScroll, true);
     };
   }, [isAutomating]);
 
@@ -765,6 +754,7 @@ export default function App() {
       <div className="interaction-panel">
         <h3>DOM Snapshot (JSON)</h3>
         <pre className="json-output">{JSON.stringify(domItems, null, 2)}</pre>
+        <button onClick={buildDomSnapshot}>Refresh DOM Snapshot</button>
 
         <div className="interaction-form">
           {/* Target Element */}
