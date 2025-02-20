@@ -2,106 +2,202 @@ import React, { useState, useRef, useEffect } from "react";
 import "./App.css";
 
 /* ---------------------------------------------
- * 1) ScreenItem, ScreenInfo, ScreenAction,
- *    InteractionType definitions
+ * 1) InteractionType + improved inference
  * --------------------------------------------- */
-
-/**
- * InteractionType - enumerates possible interactions.
- */
 const InteractionType = {
   CLICK: "CLICK",
   TYPE: "TYPE",
   DRAG: "DRAG",
-  // Could add more like HOVER, DOUBLE_CLICK, etc.
+  HOVER: "HOVER",
+  FOCUS: "FOCUS",
+  SCROLL: "SCROLL",
+  SELECT: "SELECT",
 };
 
 /**
- * Base interface for all screen items (both interactive and non-interactive).
+ * Infers possible interactions based on element tag/type.
+ *  - For ANY <input> except "checkbox","radio","button","submit","file", etc. => add TYPE
+ *  - For <textarea> => add TYPE
+ *  - For <select> => add SELECT + (others)
+ *  - For anything => at least HOVER, FOCUS, CLICK
+ *  - DRAG => if draggable
+ *  - SCROLL => if overflow
  */
+function inferPossibleInteractions(el) {
+  const tag = el.tagName.toLowerCase();
+
+  // If <input> has no explicit type, treat as "text"
+  let typeAttr = (el.getAttribute("type") || "").toLowerCase();
+  if (tag === "input" && !typeAttr) {
+    typeAttr = "text";
+  }
+
+  // Base set for any interactable element
+  const possible = new Set([
+    InteractionType.HOVER,
+    InteractionType.FOCUS,
+    InteractionType.CLICK,
+  ]);
+
+  // We'll consider these "text-like" types for TYPE interactions
+  const textLikeInputs = [
+    "text",
+    "email",
+    "password",
+    "search",
+    "tel",
+    "url",
+    "number",
+    "date",
+    "month",
+    "week",
+    "time",
+    "datetime-local",
+    "color", // etc.
+    "",
+  ];
+
+  if (tag === "textarea") {
+    possible.add(InteractionType.TYPE);
+  } else if (tag === "input") {
+    // If it's not checkbox/radio/button/submit/file/etc., allow TYPE
+    if (
+      ![
+        "checkbox",
+        "radio",
+        "button",
+        "submit",
+        "range",
+        "file",
+        "hidden",
+        "image",
+      ].includes(typeAttr)
+    ) {
+      possible.add(InteractionType.TYPE);
+    }
+  }
+
+  // For <select>, we add SELECT
+  if (tag === "select") {
+    possible.add(InteractionType.SELECT);
+  }
+
+  // If truly draggable, add DRAG
+  if (el.draggable || el.getAttribute("draggable") === "true") {
+    possible.add(InteractionType.DRAG);
+  }
+
+  // If the element is scrollable, add SCROLL
+  if (el.scrollHeight > el.clientHeight) {
+    possible.add(InteractionType.SCROLL);
+  }
+
+  return Array.from(possible);
+}
+
+/* ---------------------------------------------
+ * 2) Classes for DOM snapshot items
+ * --------------------------------------------- */
 class ScreenItem {
-  constructor({ id, x, y, width, height, tagName, textContent }) {
-    this.id = id; // Unique ID assigned by our parser
+  constructor({ id, x, y, width, height, tagName, textContent, parentId }) {
+    this.id = id;
     this.x = x;
     this.y = y;
     this.width = width;
     this.height = height;
-    this.tagName = tagName; // e.g. 'DIV', 'SPAN', 'BUTTON'
-    this.textContent = textContent; // Visible text if any
+    this.tagName = tagName;
+    this.textContent = textContent;
+    this.parentId = parentId;
   }
 }
 
-/**
- * ScreenInfo - for non-interactable items (e.g., plain text, images, headings).
- */
 class ScreenInfo extends ScreenItem {
   constructor(props) {
     super(props);
-    this.type = "INFO"; // Distinguishes this as a non-interactive item
-    // We can store extra data, like alt text for images:
+    this.type = "INFO";
     this.alt = props.alt || null;
   }
 }
 
-/**
- * ScreenAction - for interactable items (e.g., buttons, inputs, links).
- */
 class ScreenAction extends ScreenItem {
   constructor(props) {
     super(props);
     this.type = "ACTION";
-    // Additional fields that might matter for interaction
-    this.placeholder = props.placeholder || null; // for <input> or <textarea>
-    this.href = props.href || null; // for <a> links
+    this.placeholder = props.placeholder || null;
+    this.href = props.href || null;
+    this.possibleInteractions = props.possibleInteractions || [];
+    // For <select> elements, store their <option> data
+    this.selectOptions = props.selectOptions || [];
+  }
+}
+
+class ScreenContainer extends ScreenItem {
+  constructor(props) {
+    super(props);
+    this.type = "CONTAINER";
+    this.childIds = props.childIds || [];
   }
 }
 
 /* ---------------------------------------------
- * 2) Fake cursor logic (similar to the initial example)
+ * 3) Fake cursor logic + utility
  * --------------------------------------------- */
-
 function delay(ms) {
   return new Promise((res) => setTimeout(res, ms));
 }
 
+// Update to your actual images if needed
 const CURSOR_IMAGES = {
   pointer: "src/assets/cursor.svg",
   text: "src/assets/text_cursor.svg",
   hand: "src/assets/click.svg",
 };
 
+/* ---------------------------------------------
+ * 4) Main App
+ * --------------------------------------------- */
 export default function App() {
-  /* -----------------------------
-   * State variables
-   * ----------------------------- */
+  // Automation / Cursor state
   const [isAutomating, setIsAutomating] = useState(false);
   const [cursorMode, setCursorMode] = useState("pointer");
   const [cursorPos, setCursorPos] = useState({ x: 0, y: 0 });
   const cursorPosRef = useRef({ x: 0, y: 0 });
 
-  // Track user’s real mouse position
+  // Track user’s real mouse
   const defaultPos = { x: window.innerWidth / 2, y: window.innerHeight / 2 };
   const [realMousePos, setRealMousePos] = useState(defaultPos);
   const realMousePosRef = useRef(defaultPos);
 
   // Example UI state
   const [searchValue, setSearchValue] = useState("");
-  const [domItems, setDomItems] = useState([]); // Will hold JSON array of screen items
 
-  // For the user’s manual interactions at the bottom of the screen
+  // DOM Snapshot
+  const [domItems, setDomItems] = useState([]);
+
+  // Interaction panel state
   const [selectedItemId, setSelectedItemId] = useState("");
-  const [selectedInteraction, setSelectedInteraction] = useState(
-    InteractionType.CLICK
-  );
-  const [interactionText, setInteractionText] = useState(""); // text to type, if typing
+  const [availableInteractions, setAvailableInteractions] = useState([]);
+  const [selectedInteraction, setSelectedInteraction] = useState("");
+
+  // For TYPE
+  const [interactionText, setInteractionText] = useState("");
+  // For DRAG
+  const [dragMode, setDragMode] = useState("coords");
   const [dragTargetCoordinate, setDragTargetCoordinate] = useState({
     x: 0,
     y: 0,
   });
+  const [dragTargetElementId, setDragTargetElementId] = useState("");
+  // For HOVER
+  const [hoverDuration, setHoverDuration] = useState(1000);
+  // For SCROLL
+  const [scrollOffset, setScrollOffset] = useState({ top: 0, left: 0 });
+  // For SELECT
+  const [selectOptionValue, setSelectOptionValue] = useState("");
 
-  /* -----------------------------
-   * 1) Track real mouse position
-   * ----------------------------- */
+  /* ---------------------------------
+   * Mouse + window events
+   * --------------------------------- */
   useEffect(() => {
     function handleMouseMove(e) {
       if (!isAutomating) {
@@ -110,90 +206,148 @@ export default function App() {
         realMousePosRef.current = newPos;
       }
     }
+
+    // Re-parse the DOM on resize or scroll for live updates
+    function handleResizeOrScroll() {
+      buildDomSnapshot();
+    }
+
     window.addEventListener("mousemove", handleMouseMove);
-    return () => window.removeEventListener("mousemove", handleMouseMove);
+    window.addEventListener("resize", handleResizeOrScroll);
+    // Use capture or bubble as needed. We'll do capture: true here
+    window.addEventListener("scroll", handleResizeOrScroll, true);
+
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("resize", handleResizeOrScroll);
+      window.removeEventListener("scroll", handleResizeOrScroll, true);
+    };
   }, [isAutomating]);
 
-  /* -----------------------------
-   * 2) On initial mount or whenever DOM changes,
-   *    parse the DOM into our screenItems array
-   * ----------------------------- */
+  // Parse the DOM on mount
   useEffect(() => {
-    // Parse DOM after the first render
     buildDomSnapshot();
   }, []);
 
-  // We can re-run buildDomSnapshot any time we *know* the UI changed
-  // (e.g., after an interaction).
+  /* ---------------------------------
+   * Build DOM snapshot
+   * --------------------------------- */
   function buildDomSnapshot() {
-    // We'll assign incremental IDs
     let idCounter = 1;
-    const items = [];
+    const parsedItems = [];
 
-    // Query all elements inside .main-container (or entire document, up to you)
-    // For a bigger example, let's parse the entire document body:
-    const allElements = document.querySelectorAll("body *");
+    function parseElement(el, parentId = null) {
+      // Skip the fake cursor if present
+      if (el.classList && el.classList.contains("fake-cursor")) {
+        return null;
+      }
 
-    allElements.forEach((el) => {
-      // Skip the fake cursor element itself to avoid confusion
-      if (el.classList.contains("fake-cursor")) return;
+      const children = Array.from(el.children || []);
+      const childIds = [];
+
+      // DFS: parse children first
+      for (const childEl of children) {
+        const childItemId = parseElement(childEl, null);
+        if (childItemId) {
+          childIds.push(childItemId);
+        }
+      }
 
       const rect = el.getBoundingClientRect();
-      // If it's not visible or has zero size, we might skip it
-      if (rect.width === 0 && rect.height === 0) return;
+      if (rect.width === 0 && rect.height === 0) {
+        return null; // skip invisible
+      }
 
-      // Gather common data
-      const commonProps = {
+      const textContent = el.textContent.trim();
+      const baseProps = {
         id: idCounter,
         x: rect.left,
         y: rect.top,
         width: rect.width,
         height: rect.height,
         tagName: el.tagName,
-        textContent: el.textContent.trim() || "", // might be empty
+        textContent,
+        parentId,
       };
 
-      // Decide if this is a ScreenAction or ScreenInfo
-      if (isInteractable(el)) {
-        // e.g., button, input, link, ...
+      const interactiveTags = ["BUTTON", "INPUT", "A", "SELECT", "TEXTAREA"];
+      const isInteractive = interactiveTags.includes(el.tagName);
+
+      if (isInteractive) {
+        // If <select>, gather its <option> data
+        let selectOptions = [];
+        if (el.tagName.toLowerCase() === "select") {
+          const optionEls = Array.from(el.querySelectorAll("option"));
+          selectOptions = optionEls.map((opt) => ({
+            value: opt.value,
+            text: opt.textContent.trim(),
+          }));
+        }
+
         const actionProps = {
-          ...commonProps,
+          ...baseProps,
           placeholder: el.getAttribute("placeholder") || null,
           href: el.getAttribute("href") || null,
+          possibleInteractions: inferPossibleInteractions(el),
+          selectOptions,
         };
-        items.push(new ScreenAction(actionProps));
+        const actionItem = new ScreenAction(actionProps);
+        parsedItems.push(actionItem);
+
+        // Mark the actual DOM element
+        el.setAttribute("data-screen-id", String(idCounter));
+
+        idCounter++;
+        return actionItem.id;
+      } else if (children.length > 0) {
+        // Container
+        if (childIds.length > 0) {
+          const containerItem = new ScreenContainer({
+            ...baseProps,
+            childIds,
+          });
+          parsedItems.push(containerItem);
+          el.setAttribute("data-screen-id", String(idCounter));
+          idCounter++;
+          return containerItem.id;
+        } else {
+          // if it has text => info
+          if (textContent.length > 0) {
+            const infoItem = new ScreenInfo(baseProps);
+            parsedItems.push(infoItem);
+            el.setAttribute("data-screen-id", String(idCounter));
+            idCounter++;
+            return infoItem.id;
+          } else {
+            return null;
+          }
+        }
       } else {
-        // e.g., plain text div, image, heading, paragraph
-        const infoProps = {
-          ...commonProps,
-          alt: el.getAttribute("alt") || null,
-        };
-        items.push(new ScreenInfo(infoProps));
+        // Leaf node, check if it has text => info
+        if (textContent.length > 0) {
+          const infoItem = new ScreenInfo(baseProps);
+          parsedItems.push(infoItem);
+          el.setAttribute("data-screen-id", String(idCounter));
+          idCounter++;
+          return infoItem.id;
+        } else {
+          return null;
+        }
       }
+    }
 
-      idCounter++;
-    });
-
-    setDomItems(items);
+    parseElement(document.body, null);
+    setDomItems(parsedItems);
   }
 
-  // Helper to figure out if an element is "interactive"
-  function isInteractable(el) {
-    const interactiveTags = ["BUTTON", "INPUT", "A", "SELECT", "TEXTAREA"];
-    if (interactiveTags.includes(el.tagName)) return true;
-    // We could also check if it has an onClick handler or role="button", etc.
-    // For simplicity, just check known interactive tags
-    return false;
-  }
-
-  /* -----------------------------
-   * 3) Fake cursor movement + actions
-   * ----------------------------- */
+  /* ---------------------------------
+   * Start / Stop Automation
+   * --------------------------------- */
   function startAutomation() {
-    // Start from the real mouse position
-    const startingPos = realMousePosRef.current;
-    cursorPosRef.current = startingPos;
-    setCursorPos(startingPos);
+    // Start from real mouse position
+    const startPos = realMousePosRef.current;
+    cursorPosRef.current = startPos;
+    setCursorPos(startPos);
     setIsAutomating(true);
   }
 
@@ -202,6 +356,9 @@ export default function App() {
     setCursorMode("pointer");
   }
 
+  /* ---------------------------------
+   * Animate the fake cursor
+   * --------------------------------- */
   async function animateCursorTo(x, y) {
     return new Promise((resolve) => {
       const speed = 10;
@@ -231,135 +388,206 @@ export default function App() {
     });
   }
 
+  /* ---------------------------------
+   * Find DOM element by screen ID
+   * --------------------------------- */
+  function findActualElementById(id) {
+    return document.querySelector(`[data-screen-id="${id}"]`);
+  }
+
+  /* ---------------------------------
+   * Low-level interactions
+   * --------------------------------- */
   function clickElement(el) {
     el.click();
   }
 
   async function typeInElement(el, text) {
-    // For demonstration, we update a known state if it's the search input,
-    // otherwise we can just dispatch keyboard events. We'll keep it simple:
+    // If it's the top search bar
     if (el.classList.contains("search-input")) {
       for (let i = 0; i < text.length; i++) {
         setSearchValue((prev) => prev + text[i]);
-        await delay(100 + Math.random() * 50);
+        await delay(60 + Math.random() * 40);
       }
     } else {
-      // Real approach: dispatch KeyboardEvent
-      // (But this doesn't always update React state unless React sees them).
+      // dispatch real input events
       for (let i = 0; i < text.length; i++) {
-        const evt = new Event("input", { bubbles: true });
         el.value = (el.value || "") + text[i];
+        const evt = new Event("input", { bubbles: true });
         el.dispatchEvent(evt);
-        await delay(100 + Math.random() * 50);
+        await delay(60 + Math.random() * 40);
       }
     }
   }
 
-  /* -----------------------------
-   * 4) Handling user-chosen interaction
-   * ----------------------------- */
+  /* ---------------------------------
+   * Perform Interaction
+   * --------------------------------- */
   async function handlePerformInteraction() {
-    // 1) Find the item in our domItems array
+    if (!selectedItemId || !selectedInteraction) {
+      alert("Please select an element and an interaction.");
+      return;
+    }
     const item = domItems.find((d) => d.id === Number(selectedItemId));
     if (!item) {
       alert("Invalid item selected.");
       return;
     }
 
-    // 2) Start automation mode (fake cursor)
     startAutomation();
     setCursorMode("pointer");
 
     try {
-      // 3) Scroll it into view and animate to it
+      // 1) Scroll element into view
       const el = findActualElementById(item.id);
       if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
 
-      // Wait a bit for scroll
-      await delay(500);
+      // Wait for scroll
+      await delay(600);
 
-      // Animate cursor to the center of item
-      const targetX = item.x + item.width / 2;
-      const targetY = item.y + item.height / 2;
+      // 2) Re-check bounding rect in case scrolling changed it
+      const newRect = el.getBoundingClientRect();
+      const targetX = newRect.left + newRect.width / 2;
+      const targetY = newRect.top + newRect.height / 2;
+
+      // 3) Animate cursor to new position
       await animateCursorTo(targetX, targetY);
 
-      // 4) Depending on the interaction type, do the action
+      // 4) Switch on interaction
       switch (selectedInteraction) {
         case InteractionType.CLICK:
           setCursorMode("hand");
-          if (el) clickElement(el);
+          clickElement(el);
           break;
 
         case InteractionType.TYPE:
           setCursorMode("text");
-          if (el) await typeInElement(el, interactionText);
+          await typeInElement(el, interactionText);
           break;
 
-        case InteractionType.DRAG:
-          // 1) "MouseDown" on item
-          if (el) el.dispatchEvent(new Event("mousedown", { bubbles: true }));
+        case InteractionType.DRAG: {
+          if (el)
+            el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
           setCursorMode("hand");
-          // 2) Move to final coordinate
-          await animateCursorTo(dragTargetCoordinate.x, dragTargetCoordinate.y);
-          // 3) "MouseUp"
-          if (el) el.dispatchEvent(new Event("mouseup", { bubbles: true }));
+
+          if (dragMode === "coords") {
+            await animateCursorTo(
+              dragTargetCoordinate.x,
+              dragTargetCoordinate.y
+            );
+          } else {
+            // drag onto another element
+            const targetItem = domItems.find(
+              (d) => d.id === Number(dragTargetElementId)
+            );
+            if (targetItem) {
+              const dropEl = findActualElementById(targetItem.id);
+              if (dropEl) {
+                const dropRect = dropEl.getBoundingClientRect();
+                const dropX = dropRect.left + dropRect.width / 2;
+                const dropY = dropRect.top + dropRect.height / 2;
+                await animateCursorTo(dropX, dropY);
+              }
+            }
+          }
+          if (el)
+            el.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
           break;
+        }
+
+        case InteractionType.HOVER:
+          await delay(hoverDuration);
+          break;
+
+        case InteractionType.FOCUS:
+          el.focus();
+          break;
+
+        case InteractionType.SCROLL:
+          el.scrollTo(scrollOffset.left, scrollOffset.top);
+          break;
+
+        case InteractionType.SELECT: {
+          // For <select>, pick the user-chosen option
+          // item.selectOptions => array of { value, text }
+          if (el.tagName.toLowerCase() === "select" && selectOptionValue) {
+            const options = Array.from(el.querySelectorAll("option"));
+            // find the matching option by value
+            const matchIndex = options.findIndex(
+              (opt) => opt.value === selectOptionValue
+            );
+            if (matchIndex >= 0) {
+              el.selectedIndex = matchIndex;
+              const evt = new Event("change", { bubbles: true });
+              el.dispatchEvent(evt);
+            }
+          }
+          break;
+        }
 
         default:
-          console.warn("Unknown interaction type");
+          console.warn("Unknown interaction type:", selectedInteraction);
       }
-    } catch (error) {
-      console.error("Interaction error:", error);
+    } catch (err) {
+      console.error("Interaction error:", err);
     }
 
-    // 5) Stop automation mode
+    // done
     stopAutomation();
-
-    // 6) After the DOM changes, re-parse for an updated JSON
+    // re-parse in case the DOM changed
     buildDomSnapshot();
   }
 
-  // Find the actual DOM element by matching bounding rect, tag name, etc.
-  // For simplicity, let's approximate by ID in our array; we just re-query
-  // everything and find the nth "parsed" item. Or you can store references
-  // in a map. We'll do a simpler approach here:
-  function findActualElementById(id) {
-    let indexInDomItems = domItems.findIndex((d) => d.id === id);
-    if (indexInDomItems === -1) return null;
-
-    // Because the order was based on the querySelectorAll, let's do that again:
-    const allElements = Array.from(document.querySelectorAll("body *")).filter(
-      (el) => !el.classList.contains("fake-cursor")
-    );
-    if (allElements[indexInDomItems]) {
-      return allElements[indexInDomItems];
+  /* ---------------------------------
+   * Effect: when selected item changes,
+   *  update available interactions
+   * --------------------------------- */
+  useEffect(() => {
+    const item = domItems.find((d) => d.id === Number(selectedItemId));
+    if (item && item.type === "ACTION") {
+      const interactions = item.possibleInteractions || [];
+      setAvailableInteractions(interactions);
+      if (!interactions.includes(selectedInteraction)) {
+        setSelectedInteraction(interactions[0] || "");
+      }
+      // If it's a <select>, reset the selectOptionValue
+      if (item.tagName.toLowerCase() === "select") {
+        setSelectOptionValue("");
+      }
+    } else {
+      setAvailableInteractions([]);
+      setSelectedInteraction("");
+      setSelectOptionValue("");
     }
-    return null;
-  }
+  }, [selectedItemId, domItems]);
 
-  /* -----------------------------
-   * Normal UI event handlers
-   * ----------------------------- */
+  /* ---------------------------------
+   * Handlers for the example UI
+   * --------------------------------- */
   function handleSearchChange(e) {
     setSearchValue(e.target.value);
   }
   function handleSearchClick() {
     console.log("Searching for:", searchValue);
-    // In a real app, do something with this...
   }
   function handleBuy(itemName) {
     alert(`Buying "${itemName}"... (mocked)`);
   }
+  function handleFormSubmit(e) {
+    e.preventDefault();
+    alert("Form submitted! (mock)");
+  }
 
-  /* -----------------------------
-   * Render
-   * ----------------------------- */
+  /* ---------------------------------
+   * Render UI
+   * --------------------------------- */
   return (
     <div className="app-container">
       {/* NAVBAR */}
       <nav className="navbar">
         <div className="brand">MegaStore</div>
         <div className="search-section">
+          {/* No explicit type => default is "text" => TYPE allowed */}
           <input
             className="search-input"
             placeholder="Search for products..."
@@ -471,6 +699,51 @@ export default function App() {
             Stay tuned for new arrivals every week.
           </p>
         </section>
+
+        {/* Example form for further interactions */}
+        <section className="form-playground">
+          <h2>Join Our Newsletter</h2>
+          <form onSubmit={handleFormSubmit}>
+            <label>
+              Email:
+              <input type="email" placeholder="Enter your email" />
+            </label>
+            <br />
+            <label>
+              Password:
+              <input type="password" placeholder="Create a password" />
+            </label>
+            <br />
+            <label>
+              Select your country:
+              <select>
+                <option value="">--Choose--</option>
+                <option value="us">United States</option>
+                <option value="uk">United Kingdom</option>
+                <option value="ca">Canada</option>
+              </select>
+            </label>
+            <br />
+            <div>
+              <label>
+                <input type="radio" name="updates" /> Receive daily updates
+              </label>
+              <label>
+                <input type="radio" name="updates" /> Receive weekly updates
+              </label>
+            </div>
+            <br />
+            <label>
+              <input type="checkbox" /> I agree to the Terms of Service
+            </label>
+            <br />
+            <button type="submit">Subscribe</button>
+          </form>
+
+          <p>
+            Also check out our <a href="#">latest deals</a>!
+          </p>
+        </section>
       </main>
 
       {/* FAKE CURSOR */}
@@ -485,76 +758,189 @@ export default function App() {
           }}
         />
       )}
-      {/* Hide the real cursor while automating */}
+      {/* Hide real cursor while automating */}
       <style>{isAutomating ? `body { cursor: none !important; }` : ""}</style>
 
-      {/* 5) User Interaction Control Panel */}
+      {/* Interaction Panel */}
       <div className="interaction-panel">
         <h3>DOM Snapshot (JSON)</h3>
         <pre className="json-output">{JSON.stringify(domItems, null, 2)}</pre>
 
         <div className="interaction-form">
+          {/* Target Element */}
           <label>
-            Target Item ID:
-            <input
-              type="number"
+            Target Element:
+            <select
               value={selectedItemId}
               onChange={(e) => setSelectedItemId(e.target.value)}
-              style={{ width: "60px", marginLeft: "8px" }}
-            />
+              style={{ marginLeft: "8px" }}
+            >
+              <option value="">-- Choose --</option>
+              {domItems
+                .filter(
+                  (item) =>
+                    item.type === "ACTION" &&
+                    item.possibleInteractions &&
+                    item.possibleInteractions.length > 0
+                )
+                .map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {`#${item.id} <${item.tagName.toLowerCase()}> ${
+                      item.textContent ? `"${item.textContent}"` : ""
+                    }`}
+                  </option>
+                ))}
+            </select>
           </label>
 
+          {/* Interaction */}
           <label>
             Interaction:
             <select
               value={selectedInteraction}
               onChange={(e) => setSelectedInteraction(e.target.value)}
+              style={{ marginLeft: "8px" }}
             >
-              <option value={InteractionType.CLICK}>Click</option>
-              <option value={InteractionType.TYPE}>Type</option>
-              <option value={InteractionType.DRAG}>Drag</option>
+              {availableInteractions.length === 0 && (
+                <option value="">-- None --</option>
+              )}
+              {availableInteractions.map((interaction) => (
+                <option key={interaction} value={interaction}>
+                  {interaction}
+                </option>
+              ))}
             </select>
           </label>
 
-          {/* If typing, show an input for text */}
+          {/* TYPE -> Show text field */}
           {selectedInteraction === InteractionType.TYPE && (
-            <label>
+            <label style={{ marginLeft: "8px" }}>
               Text to Type:
               <input
                 type="text"
                 value={interactionText}
                 onChange={(e) => setInteractionText(e.target.value)}
-                style={{ marginLeft: "8px" }}
+                style={{ marginLeft: "4px" }}
               />
             </label>
           )}
 
-          {/* If dragging, show target coordinate fields */}
+          {/* DRAG -> coords or onto element */}
           {selectedInteraction === InteractionType.DRAG && (
-            <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+            <div
+              style={{
+                marginLeft: "8px",
+                display: "flex",
+                flexDirection: "column",
+              }}
+            >
               <label>
-                Target X:
+                Drag Mode:
+                <select
+                  value={dragMode}
+                  onChange={(e) => setDragMode(e.target.value)}
+                  style={{ marginLeft: "4px" }}
+                >
+                  <option value="coords">Coordinates</option>
+                  <option value="element">Element</option>
+                </select>
+              </label>
+              {dragMode === "coords" ? (
+                <div style={{ display: "flex", gap: "8px", marginTop: "4px" }}>
+                  <label>
+                    X:
+                    <input
+                      type="number"
+                      value={dragTargetCoordinate.x}
+                      onChange={(e) =>
+                        setDragTargetCoordinate((prev) => ({
+                          ...prev,
+                          x: Number(e.target.value),
+                        }))
+                      }
+                      style={{ width: "60px", marginLeft: "4px" }}
+                    />
+                  </label>
+                  <label>
+                    Y:
+                    <input
+                      type="number"
+                      value={dragTargetCoordinate.y}
+                      onChange={(e) =>
+                        setDragTargetCoordinate((prev) => ({
+                          ...prev,
+                          y: Number(e.target.value),
+                        }))
+                      }
+                      style={{ width: "60px", marginLeft: "4px" }}
+                    />
+                  </label>
+                </div>
+              ) : (
+                <label style={{ marginTop: "4px" }}>
+                  Drop onto element:
+                  <select
+                    value={dragTargetElementId}
+                    onChange={(e) => setDragTargetElementId(e.target.value)}
+                    style={{ marginLeft: "4px" }}
+                  >
+                    <option value="">-- Choose --</option>
+                    {domItems
+                      .filter(
+                        (d) => d.type === "ACTION" || d.type === "CONTAINER"
+                      )
+                      .map((d) => (
+                        <option key={d.id} value={d.id}>
+                          {`#${d.id} <${d.tagName.toLowerCase()}> ${
+                            d.textContent ? `"${d.textContent}"` : ""
+                          }`}
+                        </option>
+                      ))}
+                  </select>
+                </label>
+              )}
+            </div>
+          )}
+
+          {/* HOVER -> duration */}
+          {selectedInteraction === InteractionType.HOVER && (
+            <label style={{ marginLeft: "8px" }}>
+              Hover (ms):
+              <input
+                type="number"
+                value={hoverDuration}
+                onChange={(e) => setHoverDuration(Number(e.target.value))}
+                style={{ width: "80px", marginLeft: "4px" }}
+              />
+            </label>
+          )}
+
+          {/* SCROLL -> offsets */}
+          {selectedInteraction === InteractionType.SCROLL && (
+            <div style={{ display: "flex", gap: "8px", marginLeft: "8px" }}>
+              <label>
+                Scroll Top:
                 <input
                   type="number"
-                  value={dragTargetCoordinate.x}
+                  value={scrollOffset.top}
                   onChange={(e) =>
-                    setDragTargetCoordinate((prev) => ({
+                    setScrollOffset((prev) => ({
                       ...prev,
-                      x: Number(e.target.value),
+                      top: Number(e.target.value),
                     }))
                   }
                   style={{ width: "60px", marginLeft: "4px" }}
                 />
               </label>
               <label>
-                Target Y:
+                Scroll Left:
                 <input
                   type="number"
-                  value={dragTargetCoordinate.y}
+                  value={scrollOffset.left}
                   onChange={(e) =>
-                    setDragTargetCoordinate((prev) => ({
+                    setScrollOffset((prev) => ({
                       ...prev,
-                      y: Number(e.target.value),
+                      left: Number(e.target.value),
                     }))
                   }
                   style={{ width: "60px", marginLeft: "4px" }}
@@ -563,7 +949,49 @@ export default function App() {
             </div>
           )}
 
-          <button onClick={handlePerformInteraction}>Perform Action</button>
+          {/* SELECT -> which option */}
+          {selectedInteraction === InteractionType.SELECT && (
+            <div
+              style={{
+                marginLeft: "8px",
+                display: "flex",
+                flexDirection: "column",
+              }}
+            >
+              <span>Choose an option:</span>
+              {(() => {
+                const thisItem = domItems.find(
+                  (d) => d.id === Number(selectedItemId)
+                );
+                if (thisItem && thisItem.selectOptions?.length) {
+                  return (
+                    <select
+                      value={selectOptionValue}
+                      onChange={(e) => setSelectOptionValue(e.target.value)}
+                      style={{ marginTop: "4px" }}
+                    >
+                      <option value="">--None--</option>
+                      {thisItem.selectOptions.map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.text} ({opt.value})
+                        </option>
+                      ))}
+                    </select>
+                  );
+                } else {
+                  return <em>No options found.</em>;
+                }
+              })()}
+            </div>
+          )}
+
+          {/* Final button */}
+          <button
+            onClick={handlePerformInteraction}
+            style={{ marginLeft: "8px", alignSelf: "flex-start" }}
+          >
+            Perform Action
+          </button>
         </div>
       </div>
     </div>
