@@ -226,17 +226,15 @@ export default function App() {
     const parsedItems = [];
 
     function parseElement(el, parentId = null) {
-      // Skip the interaction panel and fake cursor if present
+      // 1) Skip if it's in the interaction panel or is the fake cursor
+      if (el.classList && el.classList.contains("fake-cursor")) return null;
       if (el.closest(".interaction-panel")) return null;
 
-      if (el.classList && el.classList.contains("fake-cursor")) {
-        return null;
-      }
-
+      // 2) Gather child elements
       const children = Array.from(el.children || []);
-      const childIds = [];
 
-      // DFS: parse children first
+      // Recursively parse children first
+      const childIds = [];
       for (const childEl of children) {
         const childItemId = parseElement(childEl, null);
         if (childItemId) {
@@ -244,12 +242,14 @@ export default function App() {
         }
       }
 
+      // 3) Check if element is visible (non-zero size)
       const rect = el.getBoundingClientRect();
       if (rect.width === 0 && rect.height === 0) {
-        return null; // skip invisible
+        return null;
       }
 
-      const textContent = el.textContent.trim();
+      // 4) Basic info
+      let textContent = el.textContent.trim();
       const baseProps = {
         id: idCounter,
         x: rect.left,
@@ -261,11 +261,13 @@ export default function App() {
         parentId,
       };
 
+      // 5) Decide if it's ACTION, INFO, or CONTAINER
       const interactiveTags = ["BUTTON", "INPUT", "A", "SELECT", "TEXTAREA"];
       const isInteractive = interactiveTags.includes(el.tagName);
 
       if (isInteractive) {
-        // If <select>, gather its <option> data
+        // It's an ACTION. (Potentially a <select> with options, etc.)
+        // ... gather placeholder, possible interactions, etc.
         let selectOptions = [];
         if (el.tagName.toLowerCase() === "select") {
           const optionEls = Array.from(el.querySelectorAll("option"));
@@ -274,39 +276,47 @@ export default function App() {
             text: opt.textContent.trim(),
           }));
         }
-
         const actionProps = {
           ...baseProps,
+          // For example:
           placeholder: el.getAttribute("placeholder") || null,
           href: el.getAttribute("href") || null,
           possibleInteractions: inferPossibleInteractions(el),
+          // If <select>, gather <option> data, etc.
           selectOptions,
         };
         const actionItem = new ScreenAction(actionProps);
         parsedItems.push(actionItem);
 
-        // Mark the actual DOM element
         el.setAttribute("data-screen-id", String(idCounter));
 
         idCounter++;
         return actionItem.id;
       } else if (children.length > 0) {
-        // Container
+        // Potentially a container
         if (childIds.length > 0) {
+          // If the container has valid child items, we treat it as a CONTAINER
+          // BUT we clear out its text to avoid duplicating child text.
+          baseProps.textContent = ""; // <--- Clear the parent text
+
           const containerItem = new ScreenContainer({
             ...baseProps,
             childIds,
           });
           parsedItems.push(containerItem);
+
           el.setAttribute("data-screen-id", String(idCounter));
+
           idCounter++;
           return containerItem.id;
         } else {
-          // if it has text => info
+          // If children exist but none were valid => maybe this is just text
           if (textContent.length > 0) {
             const infoItem = new ScreenInfo(baseProps);
             parsedItems.push(infoItem);
+
             el.setAttribute("data-screen-id", String(idCounter));
+
             idCounter++;
             return infoItem.id;
           } else {
@@ -314,11 +324,14 @@ export default function App() {
           }
         }
       } else {
-        // Leaf node, check if it has text => info
+        // No children => could be plain text
         if (textContent.length > 0) {
+          // It's an INFO node
           const infoItem = new ScreenInfo(baseProps);
           parsedItems.push(infoItem);
+
           el.setAttribute("data-screen-id", String(idCounter));
+
           idCounter++;
           return infoItem.id;
         } else {
@@ -327,7 +340,10 @@ export default function App() {
       }
     }
 
+    // Start parsing from document.body
     parseElement(document.body, null);
+
+    // Finally, set to state or wherever you're storing
     setDomItems(parsedItems);
   }
 
