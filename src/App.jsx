@@ -1,33 +1,59 @@
 import React, { useEffect, useState } from "react";
 import "./App.css";
 
+/**
+ * Small helper to simulate waiting N ms.
+ */
 function delay(ms) {
   return new Promise((res) => setTimeout(res, ms));
 }
 
+/**
+ * Cursor image URLs for different "modes":
+ * - pointer: normal arrow
+ * - text: I-beam
+ * - hand: hand pointer (often for links/buttons)
+ */
+const CURSOR_IMAGES = {
+  pointer: "src/assets/cursor.svg",
+  text: "src/assets/text_cursor.svg",
+  hand: "src/assets/click.svg",
+};
+
 export default function App() {
-  //
-  // State / Refs
-  //
+  /**
+   * Whether we are in "automation" mode.
+   */
   const [isAutomating, setIsAutomating] = useState(false);
 
-  // The fake cursor’s position on screen
+  /**
+   * Fake cursor position (x, y).
+   * We'll update this while animating steps.
+   */
   const [cursorPos, setCursorPos] = useState({ x: 0, y: 0 });
 
-  // The user’s real mouse position (tracked continuously when not automating).
+  /**
+   * Keep track of the user’s real mouse position while NOT automating.
+   * Once automation starts, we set the fake cursor to that location.
+   */
   const [realMousePos, setRealMousePos] = useState({ x: 0, y: 0 });
 
-  // The fake “search query” typed into the search bar
+  /**
+   * Current "mode" of the fake cursor: pointer, text, or hand.
+   */
+  const [cursorMode, setCursorMode] = useState("pointer");
+
+  /**
+   * Example UI state: the typed text in the search bar.
+   */
   const [searchValue, setSearchValue] = useState("");
 
-  //
-  // Effects
-  //
-
-  // 1) Track the user's real mouse location
-  //    We only do this while NOT automating, so we don’t overwrite the fake cursor’s pos.
+  /* -----------------------------
+   * 1) Track user's real mouse position while NOT automating
+   * ----------------------------- */
   useEffect(() => {
     function handleMouseMove(e) {
+      // Only track if not automating
       if (!isAutomating) {
         setRealMousePos({ x: e.clientX, y: e.clientY });
       }
@@ -36,7 +62,9 @@ export default function App() {
     return () => window.removeEventListener("mousemove", handleMouseMove);
   }, [isAutomating]);
 
-  // 2) Listen for keydown “A” to start automation
+  /* -----------------------------
+   * 2) Listen for "A" key to start automation
+   * ----------------------------- */
   useEffect(() => {
     function handleKeyDown(e) {
       if (e.key.toLowerCase() === "a" && !isAutomating) {
@@ -47,64 +75,87 @@ export default function App() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [isAutomating]);
 
-  //
-  // Automation Logic
-  //
-
+  /* -----------------------------
+   * Start the automation script
+   * ----------------------------- */
   async function startAutomation() {
-    // On start, place the fake cursor exactly where the user’s real mouse is
+    // Step 0: Place the fake cursor exactly where the real mouse is.
     setCursorPos(realMousePos);
     setIsAutomating(true);
 
     try {
-      // Step 1: Move to Search Input, click, type
+      // 1) Move to the search input, click it, then type.
       const searchInput = document.querySelector(".search-input");
       if (searchInput) {
         await moveFakeCursorToElement(searchInput);
+        // Switch to "hand" when we're about to click
+        setCursorMode("hand");
         clickElement(searchInput);
+
+        // Now that we've clicked inside a text field, switch to text cursor
+        setCursorMode("text");
         await typeInSearchInput("Nice Shoes");
       }
 
-      // Step 2: Move to "Search" button, click
+      // 2) Move to the "Search" button, click.
       const searchButton = document.querySelector(".search-button");
       if (searchButton) {
+        // Return to pointer while moving
+        setCursorMode("pointer");
         await moveFakeCursorToElement(searchButton);
+
+        // Switch to hand for click
+        setCursorMode("hand");
         clickElement(searchButton);
       }
 
-      // Step 3: Scroll down and buy item #2
-      const secondProductBuyBtn = document.querySelectorAll(".buy-btn")[1];
-      if (secondProductBuyBtn) {
-        await moveFakeCursorToElement(secondProductBuyBtn, true);
-        clickElement(secondProductBuyBtn);
+      // 3) Move to the second product's "Buy Now" button
+      const secondProduct = document.querySelectorAll(".buy-btn")[1];
+      if (secondProduct) {
+        // Move as pointer
+        setCursorMode("pointer");
+        await moveFakeCursorToElement(secondProduct, true);
+
+        // Switch to hand for click
+        setCursorMode("hand");
+        clickElement(secondProduct);
         alert("Proceeding to checkout for Item #2!");
       }
     } catch (err) {
       console.error("Automation error:", err);
     }
 
+    // End
     stopAutomation();
   }
 
   function stopAutomation() {
     setIsAutomating(false);
+    // Reset cursor mode if you want
+    setCursorMode("pointer");
   }
 
-  // Simulate typing text, character by character
+  /* -----------------------------
+   * Utility: click a DOM element
+   * ----------------------------- */
+  function clickElement(el) {
+    el.click(); // real DOM click
+  }
+
+  /* -----------------------------
+   * Utility: Type text into the search input, char by char
+   * ----------------------------- */
   async function typeInSearchInput(text) {
     for (let i = 0; i < text.length; i++) {
       setSearchValue((prev) => prev + text[i]);
-      await delay(120 + Math.random() * 80);
+      await delay(100 + Math.random() * 50);
     }
   }
 
-  // Actually clicks an element in the DOM
-  function clickElement(el) {
-    el.click();
-  }
-
-  // Move the fake cursor from its current position to a DOM element.
-  // Optionally scroll the element into view first.
+  /* -----------------------------
+   * Utility: Move the fake cursor to an element
+   * Optionally scroll into view
+   * ----------------------------- */
   function moveFakeCursorToElement(el, scrollIntoView = false) {
     return new Promise((resolve) => {
       if (!el) return resolve();
@@ -116,13 +167,15 @@ export default function App() {
       const rect = el.getBoundingClientRect();
       const targetX = rect.left + rect.width / 2;
       const targetY = rect.top + rect.height / 2;
-
       const speed = 8;
+
       animateCursor(cursorPos.x, cursorPos.y, targetX, targetY, speed, resolve);
     });
   }
 
-  // Animate the fake cursor from (startX, startY) -> (endX, endY)
+  /* -----------------------------
+   * Utility: Animate from (startX, startY) to (endX, endY)
+   * ----------------------------- */
   function animateCursor(startX, startY, endX, endY, speed, onDone) {
     let currentX = startX;
     let currentY = startY;
@@ -133,11 +186,10 @@ export default function App() {
       const dist = Math.sqrt(dx * dx + dy * dy);
 
       if (dist < speed) {
-        // Close enough; snap to final
+        // Snap to final
         setCursorPos({ x: endX, y: endY });
         if (onDone) onDone();
       } else {
-        // Move a little closer
         const angle = Math.atan2(dy, dx);
         currentX += speed * Math.cos(angle);
         currentY += speed * Math.sin(angle);
@@ -148,15 +200,15 @@ export default function App() {
     requestAnimationFrame(step);
   }
 
-  //
-  // Handlers for normal UI (search, buy, etc.)
-  //
+  /* -----------------------------
+   * Normal UI interactions
+   * ----------------------------- */
   function handleSearchChange(e) {
     setSearchValue(e.target.value);
   }
   function handleSearchClick() {
     console.log("Searching for:", searchValue);
-    // In a real app, you'd query a backend or filter products...
+    // In a real app, you'd do something with this...
   }
   function handleBuy(itemName) {
     alert(`Buying ${itemName}... (mocked)`);
@@ -186,11 +238,11 @@ export default function App() {
         <div className="products-grid">
           <div className="product-card">
             <img
-              src="https://fastly.picsum.photos/id/175/2896/1944.jpg?hmac=djMSfAvFgWLJ2J3cBulHUAb4yvsQk0d4m4xBJFKzZrs"
+              src="https://fastly.picsum.photos/id/39/3456/2304.jpg?hmac=cc_VPxzydwTUbGEtpsDeo2NxCkeYQrhTLqw4TFo-dIg"
               alt="Item #1"
             />
             <h3>Item #1</h3>
-            <p>Antique Clock</p>
+            <p>Record Player</p>
             <button className="buy-btn" onClick={() => handleBuy("Item #1")}>
               Buy Now
             </button>
@@ -210,11 +262,11 @@ export default function App() {
 
           <div className="product-card">
             <img
-              src="https://fastly.picsum.photos/id/39/3456/2304.jpg?hmac=cc_VPxzydwTUbGEtpsDeo2NxCkeYQrhTLqw4TFo-dIg"
+              src="http://fastly.picsum.photos/id/175/2896/1944.jpg?hmac=djMSfAvFgWLJ2J3cBulHUAb4yvsQk0d4m4xBJFKzZrs"
               alt="Item #3"
             />
             <h3>Item #3</h3>
-            <p>Record Player</p>
+            <p>Antique Clock</p>
             <button className="buy-btn" onClick={() => handleBuy("Item #3")}>
               Buy Now
             </button>
@@ -225,7 +277,7 @@ export default function App() {
       {/* FAKE CURSOR */}
       {isAutomating && (
         <img
-          src="https://upload.wikimedia.org/wikipedia/commons/d/da/Aero_arrow_xl.png"
+          src={CURSOR_IMAGES[cursorMode]}
           alt="Fake Cursor"
           className="fake-cursor"
           style={{
