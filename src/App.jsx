@@ -185,27 +185,36 @@ export default function App() {
         <h2>Featured Products</h2>
         <div className="products-grid">
           <div className="product-card">
-            <img src="https://via.placeholder.com/150" alt="Item #1" />
+            <img
+              src="https://fastly.picsum.photos/id/175/2896/1944.jpg?hmac=djMSfAvFgWLJ2J3cBulHUAb4yvsQk0d4m4xBJFKzZrs"
+              alt="Item #1"
+            />
             <h3>Item #1</h3>
-            <p>Cool shoes!</p>
+            <p>Antique Clock</p>
             <button className="buy-btn" onClick={() => handleBuy("Item #1")}>
               Buy Now
             </button>
           </div>
 
           <div className="product-card">
-            <img src="https://via.placeholder.com/150" alt="Item #2" />
+            <img
+              src="https://fastly.picsum.photos/id/9/5000/3269.jpg?hmac=cZKbaLeduq7rNB8X-bigYO8bvPIWtT-mh8GRXtU3vPc"
+              alt="Item #2"
+            />
             <h3>Item #2</h3>
-            <p>Nicer shoes!</p>
+            <p>MacBook Air</p>
             <button className="buy-btn" onClick={() => handleBuy("Item #2")}>
               Buy Now
             </button>
           </div>
 
           <div className="product-card">
-            <img src="https://via.placeholder.com/150" alt="Item #3" />
+            <img
+              src="https://fastly.picsum.photos/id/39/3456/2304.jpg?hmac=cc_VPxzydwTUbGEtpsDeo2NxCkeYQrhTLqw4TFo-dIg"
+              alt="Item #3"
+            />
             <h3>Item #3</h3>
-            <p>Fanciest shoes!</p>
+            <p>Record Player</p>
             <button className="buy-btn" onClick={() => handleBuy("Item #3")}>
               Buy Now
             </button>
@@ -216,7 +225,7 @@ export default function App() {
       {/* FAKE CURSOR */}
       {isAutomating && (
         <img
-          src="https://upload.wikimedia.org/wikipedia/commons/6/67/Windows_cursors_arrow.png"
+          src="https://upload.wikimedia.org/wikipedia/commons/d/da/Aero_arrow_xl.png"
           alt="Fake Cursor"
           className="fake-cursor"
           style={{
