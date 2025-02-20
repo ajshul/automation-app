@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import "./App.css";
 
 /**
@@ -31,12 +31,18 @@ export default function App() {
    * We'll update this while animating steps.
    */
   const [cursorPos, setCursorPos] = useState({ x: 0, y: 0 });
+  // Use a ref to keep a synchronous copy of the fake cursor's position.
+  const cursorPosRef = useRef({ x: 0, y: 0 });
 
   /**
    * Keep track of the user’s real mouse position while NOT automating.
-   * Once automation starts, we set the fake cursor to that location.
+   * We initialize this to the center of the window so that if the user hasn't
+   * moved the mouse before the first automation, it starts at a natural spot.
    */
-  const [realMousePos, setRealMousePos] = useState({ x: 0, y: 0 });
+  const defaultPos = { x: window.innerWidth / 2, y: window.innerHeight / 2 };
+  const [realMousePos, setRealMousePos] = useState(defaultPos);
+  // Also store the real mouse position in a ref for immediate updates.
+  const realMousePosRef = useRef(defaultPos);
 
   /**
    * Current "mode" of the fake cursor: pointer, text, or hand.
@@ -55,7 +61,9 @@ export default function App() {
     function handleMouseMove(e) {
       // Only track if not automating
       if (!isAutomating) {
-        setRealMousePos({ x: e.clientX, y: e.clientY });
+        const newPos = { x: e.clientX, y: e.clientY };
+        setRealMousePos(newPos);
+        realMousePosRef.current = newPos;
       }
     }
     window.addEventListener("mousemove", handleMouseMove);
@@ -79,8 +87,10 @@ export default function App() {
    * Start the automation script
    * ----------------------------- */
   async function startAutomation() {
-    // Step 0: Place the fake cursor exactly where the real mouse is.
-    setCursorPos(realMousePos);
+    // Use the current (or default) real mouse position.
+    const startingPos = realMousePosRef.current;
+    cursorPosRef.current = startingPos;
+    setCursorPos(startingPos);
     setIsAutomating(true);
 
     try {
@@ -125,13 +135,13 @@ export default function App() {
       console.error("Automation error:", err);
     }
 
-    // End
+    // End automation
     stopAutomation();
   }
 
   function stopAutomation() {
     setIsAutomating(false);
-    // Reset cursor mode if you want
+    // Reset cursor mode if desired
     setCursorMode("pointer");
   }
 
@@ -139,7 +149,7 @@ export default function App() {
    * Utility: click a DOM element
    * ----------------------------- */
   function clickElement(el) {
-    el.click(); // real DOM click
+    el.click(); // Trigger a real DOM click
   }
 
   /* -----------------------------
@@ -169,16 +179,16 @@ export default function App() {
       const targetY = rect.top + rect.height / 2;
       const speed = 8;
 
-      animateCursor(cursorPos.x, cursorPos.y, targetX, targetY, speed, resolve);
+      animateCursor(targetX, targetY, speed, resolve);
     });
   }
 
   /* -----------------------------
-   * Utility: Animate from (startX, startY) to (endX, endY)
+   * Utility: Animate from the current position to (endX, endY)
    * ----------------------------- */
-  function animateCursor(startX, startY, endX, endY, speed, onDone) {
-    let currentX = startX;
-    let currentY = startY;
+  function animateCursor(endX, endY, speed, onDone) {
+    // Start from the current position in the ref.
+    let { x: currentX, y: currentY } = cursorPosRef.current;
 
     function step() {
       const dx = endX - currentX;
@@ -186,13 +196,17 @@ export default function App() {
       const dist = Math.sqrt(dx * dx + dy * dy);
 
       if (dist < speed) {
-        // Snap to final
-        setCursorPos({ x: endX, y: endY });
+        // Snap to final position
+        currentX = endX;
+        currentY = endY;
+        cursorPosRef.current = { x: currentX, y: currentY };
+        setCursorPos({ x: currentX, y: currentY });
         if (onDone) onDone();
       } else {
         const angle = Math.atan2(dy, dx);
         currentX += speed * Math.cos(angle);
         currentY += speed * Math.sin(angle);
+        cursorPosRef.current = { x: currentX, y: currentY };
         setCursorPos({ x: currentX, y: currentY });
         requestAnimationFrame(step);
       }
