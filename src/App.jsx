@@ -226,7 +226,9 @@ export default function App() {
     const parsedItems = [];
 
     function parseElement(el, parentId = null) {
-      // Skip the fake cursor if present
+      // Skip the interaction panel and fake cursor if present
+      if (el.closest(".interaction-panel")) return null;
+
       if (el.classList && el.classList.contains("fake-cursor")) {
         return null;
       }
