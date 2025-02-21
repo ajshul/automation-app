@@ -12,13 +12,17 @@ const InteractionType = {
   FOCUS: "FOCUS",
   SCROLL: "SCROLL",
   SELECT: "SELECT",
+  // New interactions:
+  RIGHT_CLICK: "RIGHT_CLICK",
+  DBLCLICK: "DBLCLICK",
+  WAIT: "WAIT",
 };
 
 /**
  * Infers possible interactions based on element tag/type.
  *  - For ANY <input> except "checkbox","radio","button","submit","file", etc. => add TYPE
  *  - For <textarea> => add TYPE
- *  - For <select> => add SELECT + (others)
+ *  - For <select> => add SELECT
  *  - For anything => at least HOVER, FOCUS, CLICK
  *  - DRAG => if draggable
  *  - SCROLL => if overflow
@@ -26,8 +30,8 @@ const InteractionType = {
 function inferPossibleInteractions(el) {
   const tag = el.tagName.toLowerCase();
 
-  // If <input> has no explicit type, treat as "text"
   let typeAttr = (el.getAttribute("type") || "").toLowerCase();
+  // If <input> has no explicit type, treat as "text"
   if (tag === "input" && !typeAttr) {
     typeAttr = "text";
   }
@@ -37,9 +41,13 @@ function inferPossibleInteractions(el) {
     InteractionType.HOVER,
     InteractionType.FOCUS,
     InteractionType.CLICK,
+    // Add new ones by default if you like:
+    InteractionType.RIGHT_CLICK,
+    InteractionType.DBLCLICK,
+    // We'll omit WAIT by default here, since WAIT doesn't require an element
   ]);
 
-  // We'll consider these "text-like" types for TYPE interactions
+  // We'll consider these "text-like" input types for TYPE interactions
   const textLikeInputs = [
     "text",
     "email",
@@ -53,7 +61,7 @@ function inferPossibleInteractions(el) {
     "week",
     "time",
     "datetime-local",
-    "color", // etc.
+    "color",
     "",
   ];
 
@@ -179,8 +187,12 @@ export default function App() {
   const [availableInteractions, setAvailableInteractions] = useState([]);
   const [selectedInteraction, setSelectedInteraction] = useState("");
 
+  // Additional global config for automation
+  const [cursorSpeed, setCursorSpeed] = useState(10); // speed in px/frame for cursor movement
+
   // For TYPE
   const [interactionText, setInteractionText] = useState("");
+
   // For DRAG
   const [dragMode, setDragMode] = useState("coords");
   const [dragTargetCoordinate, setDragTargetCoordinate] = useState({
@@ -188,12 +200,18 @@ export default function App() {
     y: 0,
   });
   const [dragTargetElementId, setDragTargetElementId] = useState("");
+
   // For HOVER
   const [hoverDuration, setHoverDuration] = useState(1000);
+
   // For SCROLL
   const [scrollOffset, setScrollOffset] = useState({ top: 0, left: 0 });
+
   // For SELECT
   const [selectOptionValue, setSelectOptionValue] = useState("");
+
+  // For WAIT
+  const [waitDuration, setWaitDuration] = useState(1000);
 
   /* ---------------------------------
    * Mouse + window events
@@ -216,6 +234,7 @@ export default function App() {
   // Parse the DOM on mount
   useEffect(() => {
     buildDomSnapshot();
+    // eslint-disable-next-line
   }, []);
 
   /* ---------------------------------
@@ -228,30 +247,42 @@ export default function App() {
     function parseElement(el, parentId = null) {
       // 1) Skip if it's in the interaction panel or is the fake cursor
       if (el.classList && el.classList.contains("fake-cursor")) return null;
-      if (el.closest(".interaction-panel")) return null;
+      if (el.closest && el.closest(".interaction-panel")) return null;
 
-      // 2) Gather child elements
+      // 2) Optionally skip if element is display:none or visibility:hidden
+      const style = window.getComputedStyle(el);
+      if (style.display === "none" || style.visibility === "hidden") {
+        return null;
+      }
+
+      // 3) Recursively parse children first
       const children = Array.from(el.children || []);
-
-      // Recursively parse children first
       const childIds = [];
+      // We'll create an ID for *this* element now, but only finalize the item
+      // after we know what type it is.
+      const currentElementId = idCounter;
+
+      // We increment the counter here to reserve the ID.
+      idCounter++;
+
+      // Parse children, passing the currentElementId as their parent
       for (const childEl of children) {
-        const childItemId = parseElement(childEl, null);
+        const childItemId = parseElement(childEl, currentElementId);
         if (childItemId) {
           childIds.push(childItemId);
         }
       }
 
-      // 3) Check if element is visible (non-zero size)
+      // 4) Check if element is visible (non-zero size)
       const rect = el.getBoundingClientRect();
       if (rect.width === 0 && rect.height === 0) {
         return null;
       }
 
-      // 4) Basic info
+      // 5) Basic info
       let textContent = el.textContent.trim();
       const baseProps = {
-        id: idCounter,
+        id: currentElementId,
         x: rect.left,
         y: rect.top,
         width: rect.width,
@@ -261,13 +292,12 @@ export default function App() {
         parentId,
       };
 
-      // 5) Decide if it's ACTION, INFO, or CONTAINER
+      // 6) Decide if it's ACTION, INFO, or CONTAINER
       const interactiveTags = ["BUTTON", "INPUT", "A", "SELECT", "TEXTAREA"];
       const isInteractive = interactiveTags.includes(el.tagName);
 
       if (isInteractive) {
         // It's an ACTION. (Potentially a <select> with options, etc.)
-        // ... gather placeholder, possible interactions, etc.
         let selectOptions = [];
         if (el.tagName.toLowerCase() === "select") {
           const optionEls = Array.from(el.querySelectorAll("option"));
@@ -278,46 +308,38 @@ export default function App() {
         }
         const actionProps = {
           ...baseProps,
-          // For example:
           placeholder: el.getAttribute("placeholder") || null,
           href: el.getAttribute("href") || null,
           possibleInteractions: inferPossibleInteractions(el),
-          // If <select>, gather <option> data, etc.
           selectOptions,
         };
         const actionItem = new ScreenAction(actionProps);
         parsedItems.push(actionItem);
 
-        el.setAttribute("data-screen-id", String(idCounter));
+        // Tag the actual DOM element
+        el.setAttribute("data-screen-id", String(currentElementId));
 
-        idCounter++;
         return actionItem.id;
       } else if (children.length > 0) {
         // Potentially a container
         if (childIds.length > 0) {
           // If the container has valid child items, we treat it as a CONTAINER
-          // BUT we clear out its text to avoid duplicating child text.
-          baseProps.textContent = ""; // <--- Clear the parent text
-
+          // Clear the parent text to avoid duplicating child text
+          baseProps.textContent = "";
           const containerItem = new ScreenContainer({
             ...baseProps,
             childIds,
           });
           parsedItems.push(containerItem);
 
-          el.setAttribute("data-screen-id", String(idCounter));
-
-          idCounter++;
+          el.setAttribute("data-screen-id", String(currentElementId));
           return containerItem.id;
         } else {
           // If children exist but none were valid => maybe this is just text
           if (textContent.length > 0) {
             const infoItem = new ScreenInfo(baseProps);
             parsedItems.push(infoItem);
-
-            el.setAttribute("data-screen-id", String(idCounter));
-
-            idCounter++;
+            el.setAttribute("data-screen-id", String(currentElementId));
             return infoItem.id;
           } else {
             return null;
@@ -330,9 +352,7 @@ export default function App() {
           const infoItem = new ScreenInfo(baseProps);
           parsedItems.push(infoItem);
 
-          el.setAttribute("data-screen-id", String(idCounter));
-
-          idCounter++;
+          el.setAttribute("data-screen-id", String(currentElementId));
           return infoItem.id;
         } else {
           return null;
@@ -368,7 +388,8 @@ export default function App() {
    * --------------------------------- */
   async function animateCursorTo(x, y) {
     return new Promise((resolve) => {
-      const speed = 10;
+      // Use user-configurable speed from state
+      const speed = cursorSpeed;
       let { x: currentX, y: currentY } = cursorPosRef.current;
 
       function step() {
@@ -409,21 +430,53 @@ export default function App() {
     el.click();
   }
 
+  function rightClickElement(el) {
+    // A real right-click often triggers a 'contextmenu' event
+    const evt = new MouseEvent("contextmenu", {
+      bubbles: true,
+      cancelable: true,
+      button: 2, // right click
+    });
+    el.dispatchEvent(evt);
+  }
+
+  function doubleClickElement(el) {
+    // A typical double-click might dispatch two clicks + a dblclick
+    el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    el.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    el.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    el.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+  }
+
   async function typeInElement(el, text) {
-    // If it's the top search bar
-    if (el.classList.contains("search-input")) {
-      for (let i = 0; i < text.length; i++) {
-        setSearchValue((prev) => prev + text[i]);
-        await delay(60 + Math.random() * 40);
-      }
-    } else {
-      // dispatch real input events
-      for (let i = 0; i < text.length; i++) {
-        el.value = (el.value || "") + text[i];
-        const evt = new Event("input", { bubbles: true });
-        el.dispatchEvent(evt);
-        await delay(60 + Math.random() * 40);
-      }
+    // Example: send real keyboard events
+    // (Though for React-controlled inputs, you may need extra event triggers)
+    for (let i = 0; i < text.length; i++) {
+      const char = text[i];
+      // Keydown
+      const keyDownEvent = new KeyboardEvent("keydown", {
+        key: char,
+        bubbles: true,
+      });
+      el.dispatchEvent(keyDownEvent);
+
+      // We set the value manually
+      el.value = (el.value || "") + char;
+
+      // Input event
+      const inputEvent = new Event("input", { bubbles: true });
+      el.dispatchEvent(inputEvent);
+
+      // Keyup
+      const keyUpEvent = new KeyboardEvent("keyup", {
+        key: char,
+        bubbles: true,
+      });
+      el.dispatchEvent(keyUpEvent);
+
+      // Add a small delay between keystrokes
+      await delay(60 + Math.random() * 40);
     }
   }
 
@@ -431,8 +484,19 @@ export default function App() {
    * Perform Interaction
    * --------------------------------- */
   async function handlePerformInteraction() {
+    // If the user selected WAIT, we don't need an element
+    if (selectedInteraction === InteractionType.WAIT) {
+      startAutomation();
+      try {
+        await delay(waitDuration);
+      } finally {
+        stopAutomation();
+      }
+      return;
+    }
+
     if (!selectedItemId || !selectedInteraction) {
-      alert("Please select an element and an interaction.");
+      alert("Please select an element and an interaction (or choose WAIT).");
       return;
     }
     const item = domItems.find((d) => d.id === Number(selectedItemId));
@@ -467,14 +531,23 @@ export default function App() {
           clickElement(el);
           break;
 
+        case InteractionType.RIGHT_CLICK:
+          setCursorMode("hand");
+          rightClickElement(el);
+          break;
+
+        case InteractionType.DBLCLICK:
+          setCursorMode("hand");
+          doubleClickElement(el);
+          break;
+
         case InteractionType.TYPE:
           setCursorMode("text");
           await typeInElement(el, interactionText);
           break;
 
         case InteractionType.DRAG: {
-          if (el)
-            el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+          el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
           setCursorMode("hand");
 
           if (dragMode === "coords") {
@@ -497,8 +570,7 @@ export default function App() {
               }
             }
           }
-          if (el)
-            el.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+          el.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
           break;
         }
 
@@ -516,7 +588,6 @@ export default function App() {
 
         case InteractionType.SELECT: {
           // For <select>, pick the user-chosen option
-          // item.selectOptions => array of { value, text }
           if (el.tagName.toLowerCase() === "select" && selectOptionValue) {
             const options = Array.from(el.querySelectorAll("option"));
             // find the matching option by value
@@ -553,6 +624,8 @@ export default function App() {
     const item = domItems.find((d) => d.id === Number(selectedItemId));
     if (item && item.type === "ACTION") {
       const interactions = item.possibleInteractions || [];
+      // Keep WAIT as an optional global interaction, or not
+      // interactions.push(InteractionType.WAIT);
       setAvailableInteractions(interactions);
       if (!interactions.includes(selectedInteraction)) {
         setSelectedInteraction(interactions[0] || "");
@@ -566,6 +639,7 @@ export default function App() {
       setSelectedInteraction("");
       setSelectOptionValue("");
     }
+    // eslint-disable-next-line
   }, [selectedItemId, domItems]);
 
   /* ---------------------------------
@@ -594,7 +668,6 @@ export default function App() {
       <nav className="navbar">
         <div className="brand">MegaStore</div>
         <div className="search-section">
-          {/* No explicit type => default is "text" => TYPE allowed */}
           <input
             className="search-input"
             placeholder="Search for products..."
@@ -774,6 +847,19 @@ export default function App() {
         <pre className="json-output">{JSON.stringify(domItems, null, 2)}</pre>
         <button onClick={buildDomSnapshot}>Refresh DOM Snapshot</button>
 
+        {/* Cursor Speed */}
+        <div style={{ marginTop: "1rem" }}>
+          <label>
+            Cursor Speed (px/frame):
+            <input
+              type="number"
+              value={cursorSpeed}
+              onChange={(e) => setCursorSpeed(Number(e.target.value))}
+              style={{ marginLeft: "8px", width: "60px" }}
+            />
+          </label>
+        </div>
+
         <div className="interaction-form">
           {/* Target Element */}
           <label>
@@ -782,6 +868,7 @@ export default function App() {
               value={selectedItemId}
               onChange={(e) => setSelectedItemId(e.target.value)}
               style={{ marginLeft: "8px" }}
+              disabled={selectedInteraction === InteractionType.WAIT}
             >
               <option value="">-- Choose --</option>
               {domItems
@@ -809,9 +896,12 @@ export default function App() {
               onChange={(e) => setSelectedInteraction(e.target.value)}
               style={{ marginLeft: "8px" }}
             >
-              {availableInteractions.length === 0 && (
-                <option value="">-- None --</option>
-              )}
+              <option value="">-- None --</option>
+
+              {/* We can show WAIT globally */}
+              <option value={InteractionType.WAIT}>WAIT (no element)</option>
+
+              {/* Now show the rest from availableInteractions */}
               {availableInteractions.map((interaction) => (
                 <option key={interaction} value={interaction}>
                   {interaction}
@@ -993,10 +1083,24 @@ export default function App() {
             </div>
           )}
 
+          {/* WAIT -> duration */}
+          {selectedInteraction === InteractionType.WAIT && (
+            <label style={{ marginLeft: "8px" }}>
+              Wait (ms):
+              <input
+                type="number"
+                value={waitDuration}
+                onChange={(e) => setWaitDuration(Number(e.target.value))}
+                style={{ width: "80px", marginLeft: "4px" }}
+              />
+            </label>
+          )}
+
           {/* Final button */}
           <button
             onClick={handlePerformInteraction}
             style={{ marginLeft: "8px", alignSelf: "flex-start" }}
+            disabled={isAutomating}
           >
             Perform Action
           </button>
